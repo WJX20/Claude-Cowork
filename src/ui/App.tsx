@@ -9,11 +9,21 @@ import { PromptInput, usePromptActions } from "./components/PromptInput";
 import { MessageCard } from "./components/EventCard";
 import MDContent from "./render/markdown";
 
+// 滚动到底部的阈值（px），用户滚动到距离底部这个范围内，视为"在底部"
+const SCROLL_THRESHOLD = 50;
+
 function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const partialMessageRef = useRef("");
   const [partialMessage, setPartialMessage] = useState("");
   const [showPartialMessage, setShowPartialMessage] = useState(false);
+  // 控制是否自动滚动到底部
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  // 是否有新消息（用于显示提示按钮）
+  const [hasNewMessages, setHasNewMessages] = useState(false);
+  // 记录上一次消息数量，用于判断是否有新消息
+  const prevMessagesLengthRef = useRef(0);
 
   const sessions = useAppStore((s) => s.sessions);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
@@ -56,7 +66,13 @@ function App() {
     if (message.event.type === "content_block_delta") {
       partialMessageRef.current += getPartialMessageContent(message.event) || "";
       setPartialMessage(partialMessageRef.current);
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      // 仅在 shouldAutoScroll 为 true 时滚动到底部
+      if (shouldAutoScroll) {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      } else {
+        // 用户不在底部，标记有新消息
+        setHasNewMessages(true);
+      }
     }
 
     if (message.event.type === "content_block_stop") {
@@ -66,7 +82,7 @@ function App() {
         setPartialMessage(partialMessageRef.current);
       }, 500);
     }
-  }, []);
+  }, [shouldAutoScroll]);
 
   // Combined event handler
   const onEvent = useCallback((event: ServerEvent) => {
@@ -95,9 +111,53 @@ function App() {
     }
   }, [activeSessionId, connected, sessions, historyRequested, markHistoryRequested, sendEvent]);
 
+  // 滚动事件处理：判断用户是否滚动到底部
+  const handleScroll = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isAtBottom = scrollTop + clientHeight >= scrollHeight - SCROLL_THRESHOLD;
+    
+    // 仅在状态需要改变时更新
+    if (isAtBottom !== shouldAutoScroll) {
+      setShouldAutoScroll(isAtBottom);
+      // 用户滚动到底部时，清除新消息提示
+      if (isAtBottom) {
+        setHasNewMessages(false);
+      }
+    }
+  }, [shouldAutoScroll]);
+
+  // 会话切换时重置滚动状态
   useEffect(() => {
+    // 当会话切换时，重置自动滚动状态并滚动到底部
+    setShouldAutoScroll(true);
+    setHasNewMessages(false);
+    prevMessagesLengthRef.current = 0;
+    // 延迟执行滚动，确保消息已渲染
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+    }, 100);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    // 仅在 shouldAutoScroll 为 true 时滚动到底部
+    if (shouldAutoScroll) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else if (messages.length > prevMessagesLengthRef.current && prevMessagesLengthRef.current > 0) {
+      // 有新消息且用户不在底部
+      setHasNewMessages(true);
+    }
+    prevMessagesLengthRef.current = messages.length;
+  }, [messages, partialMessage, shouldAutoScroll]);
+
+  // 点击"有新消息"按钮，滚动到底部
+  const scrollToBottom = useCallback(() => {
+    setShouldAutoScroll(true);
+    setHasNewMessages(false);
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, partialMessage]);
+  }, []);
 
   const handleNewSession = useCallback(() => {
     useAppStore.getState().setActiveSessionId(null);
@@ -130,7 +190,11 @@ function App() {
           <span className="text-sm font-medium text-ink-700">{activeSession?.title || "Agent Cowork"}</span>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-8 pb-40 pt-6">
+        <div 
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto px-8 pb-40 pt-6"
+        >
           <div className="mx-auto max-w-3xl">
             {messages.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -178,7 +242,23 @@ function App() {
           </div>
         </div>
 
-        <PromptInput sendEvent={sendEvent} />
+        <PromptInput sendEvent={sendEvent} onSendMessage={() => {
+          setShouldAutoScroll(true);
+          setHasNewMessages(false);
+        }} />
+
+        {/* 有新消息提示按钮 */}
+        {hasNewMessages && !shouldAutoScroll && (
+          <button
+            onClick={scrollToBottom}
+            className="fixed bottom-28 left-1/2 ml-[140px] z-40 -translate-x-1/2 flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-sm font-medium text-white shadow-lg transition-all hover:bg-accent-hover hover:scale-105 animate-bounce-subtle"
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 5v14M5 12l7 7 7-7" />
+            </svg>
+            <span>有新消息</span>
+          </button>
+        )}
       </main>
 
       {showStartModal && (
